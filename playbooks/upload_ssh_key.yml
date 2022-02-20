@@ -1,0 +1,8 @@
+- hosts: all
+  remote_user: pi
+  tasks:
+    - authorized_keys:
+        user: pi
+        state: present
+        manage_dir: yes
+        key: "{{ lookup('file', '~/.ssh/id_rsa.pub') }}"

@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "homelab"
+version = "0.1.0"
+description = "Personal Homelab"
+authors = ["Shahin <hi@shahinism.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+ansible = "^5.3.0"
+
+[tool.poetry.dev-dependencies]
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
