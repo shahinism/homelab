@@ -3,3 +3,6 @@ install-deps:
 
 init: install-deps
 	ansible-playbook --ask-pass playbooks/upload_ssh_key.yml -i hosts
+
+run: init
+	ansible-playbook playbooks/main.yml
