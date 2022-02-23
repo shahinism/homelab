@@ -14,6 +14,48 @@ following areas:
 
 * Configuration
 
+** Configure Ansible
+
+Configure resource discovery where:
+
+- ~hosts~ will contain all targeted hosts.
+- ~roles~ will contain all the installed roles.
+- ~remote_user~ is set to ~pi~ as we are using that user on our raspberry pis!
+
+#+begin_src conf :tangle ansible.cfg
+[defaults]
+inventory=./hosts
+roles_path=./roles
+remote_user=pi
+#+end_src
+
+** Configure editor
+
+Yeah, [[http://EditorConfig.org][let's make it easy to]] contribute for everyone (hehe, at least on the
+paper)!
+
+#+begin_src conf :tangle .editorconfig
+# top-most EditorConfig file
+root = true
+
+# Unix-style newlines with a newline ending every file
+[*]
+end_of_line = lf
+insert_final_newline = true
+charset = utf-8
+
+# Indentation for all Yaml files
+[*.yml]
+indent_style = space
+indent_size = 2
+
+# Indentation for all Ansible template files
+[*.j2]
+indent_style = space
+indent_size = 4
+
+#+end_src
+
 ** Hosts
 
 Currently there is one host targetted by this configuration. I'm going to define
