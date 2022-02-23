@@ -1,0 +1,374 @@
+#+TITLE: Shahin's Home lab
+#+auto_tangle: t
+
+* Preface
+
+This is a personal home lab server which I'm trying to run as a practice in the
+following areas:
+
+1. Infrastructure as Code: Mostly ansible is used at this moment. But knowing
+   its shortcomings, I expect to incrementally replace it with other toolings.
+2. Self-hosted cloud
+3. Security
+
+
+* Configuration
+
+** Hosts
+
+Currently there is one host targetted by this configuration. I'm going to define
+it inside the project for now:
+
+#+begin_src text :tangle ./hosts
+192.168.178.94
+#+end_src
+
+** SSH keys
+
+First thing first, I want to upload my SSH keys into the device, so except for
+the first time, I don't need to worry about the password and accessing. Also
+later we are going to secure SSH connections and as part of that, we are going
+to disable password login:
+
+#+begin_src yaml :tangle playbooks/upload_ssh_key.yml
+---
+- hosts: all
+  remote_user: pi
+  tasks:
+    - name: Upload SSH Key
+      authorized_key:
+        user: pi
+        state: present
+        manage_dir: yes
+        key: "{{ lookup('file', '~/.ssh/id_rsa.pub') }}"
+#+end_src
+
+To run this however, I need to enter the password for the first time, and for
+that I need to use ~--ask-pass~ flag with the ~ansible-playbook~ command. That
+however, needs another dependency, which I need to install like:
+
+#+begin_src sh
+sudo apt install sshpass
+#+end_src
+
+Probably easier to put all these into a ~Makefile~.
+
+*** Make
+
+#+begin_src makefile :tangle Makefile
+install-deps:
+	sudo apt install sshpass
+
+init: install-deps
+	ansible-playbook --ask-pass playbooks/upload_ssh_key.yml -i hosts
+#+end_src
+
+Now running ~make init~ should satisfy our needs. Let's see:
+
+#+begin_src shell
+make init
+#+end_src
+
+**** To-dos [0%]
+***** TODO Is it possible to run the ~make init~ code block?
+** System
+Make sure the system is update:
+
+#+begin_src yaml :tangle playbooks/system.yml
+---
+- name: Update apt repository and cache
+  apt:
+    update_cache: yes
+
+- name: Upgrade installed packages
+  apt:
+    upgrade: dist
+#+end_src
+** Applications
+Here we are going to manage the applications required by the host. For the self
+service mechanism however, I tend to use containerized applications as much as
+possible.
+
+*** Generic
+
+#+begin_src yaml :tangle playbooks/applications.yml
+---
+- name: Install required applications
+  apt:
+    pkg:
+      - cryptsetup
+      - libffi-dev
+      - libssl-dev
+      - python3
+      - python3-pip
+      - ufw
+      - fail2ban
+    state: latest
+    update_cache: true
+#+end_src
+
+*** Docker
+
+First thing I tried was to use a ~role~ from the galaxy, however it turned out
+to be simpler (it supposed to be, right?) and I thought safer to do this
+component myself. Main reason being to not being blocked by the upstream on
+updates.
+
+#+begin_src yaml :tangle playbooks/applications.yml
+- name: Remove python-configparser package
+  apt:
+    name: python-configparser
+    state: absent
+
+- name: get docker convenience script
+  shell: curl -fsSL https://get.docker.com -o get-docker.sh
+  args:
+    creates: /home/pi/get-docker.sh
+
+- name: install docker
+  shell: sh /home/pi/get-docker.sh
+  args:
+    creates: /usr/bin/docker
+#+end_src
+
+Add ~pi~ user to Docker group, so it can execute ~docker~ commands without
+~sudo~:
+
+#+begin_src yaml :tangle playbooks/applications.yml
+- name: make pi user execute docker commands
+  shell: usermod -aG docker pi
+
+#+end_src
+
+Install ~docker-compose~ command using ~Python3~:
+
+#+begin_src yaml :tangle playbooks/applications.yml
+- name: install docker-compose
+  shell: pip3 -v install docker-compose
+  args:
+    creates: /usr/local/bin/docker-compose
+#+end_src
+
+**** Sources
+- [[https://iotechonline.com/how-to-install-docker-and-docker-compose-on-your-raspberry-pi-with-ansible/][How to install Docker and docker-compose on Raspberry Pi using Ansible]]
+
+*** [[https://github.com/SelfhostedPro/Yacht][Yacht]]
+
+Well, I'm not sure about this application surface yet. Having two options,
+including [[http://portainer.io/][Potrainer]], I decided to give new kid in the town a try, as it seems to
+be easier to use, and I don't want to spend more than necessary time on it for a
+single node.
+
+#+begin_src yaml :tangle playbooks/applications.yml
+- name: Create the Docker volume for Yacht
+  docker_volume:
+    name: volume_one
+
+- name: Run Yacht container
+  docker_container:
+    name: yacht
+    image: selfhostedpro/yacht
+    state: started
+    ports:
+      - "8000:8000"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - "yacht:/config"
+#+end_src
+
+** Disks
+
+*** Prepare the Disks
+
+I have two disks which I wish to connect to this server. The partitioning scheme
+I have in mind is quite simple. Create an encryption layer using [[https://gitlab.com/cryptsetup/cryptsetup][cryptsetup]] and
+create a single ~ext4~ partition inside it.
+
+There will be two keys installed on the encryption layer to open the disks.
+First one a long password, to be used on ad-hoc mode. And second one a key file,
+registered in ~crypttab~ to allow automatic decryption on the server.
+
+**Caution**: This scheme is not a full circle yet, as whomever has access to the
+device, would be able to access the disks. In future I plan to give [[https://wiki.gentoo.org/wiki/User:Sakaki/Sakaki%27s_EFI_Install_Guide/Configuring_Secure_Boot][Sakaki's EFI
+Install Guide/Configuration Secure Boot]] a try to resovle this issue.
+
+**** Encryption Process
+
+Generate an encryption file using ~openssl~:
+
+#+begin_src sh
+export KEY_PATH=./playbooks/keys/$DISK_NAME
+openssl genrsa -out $KEY_PATH
+#+end_src
+
+Secure it locally:
+
+#+begin_src sh
+chmod -v 0400 $KEY_PATH
+chown $USER:$USER $KEY_PATH
+#+end_src
+
+Shred the device:
+
+#+begin_src sh
+shred -v --iterations=1 $DEVICE
+#+end_src
+
+Create the encryption layer:
+
+#+begin_src sh
+cryptsetup luksFormat $DEVICE
+#+end_src
+
+So far the encryption has been done, and the password key is added. Let's add
+the key file as extra way of possibility:
+
+#+begin_src sh
+cryptsetup luksAddKey $DEVICE $KEY_PATH
+#+end_src
+
+Now open the device using the key file:
+
+#+begin_src sh
+cryptsetup luksOpen $DEVICE hdd_$DEVICE --key-file $KEY_PATH
+#+end_src
+
+And format it:
+
+#+begin_src sh
+mkfs.ext4 $DEVICE
+#+end_src
+
+Repeat this process for any new hard drive.
+
+***** Resources
+
+- [[https://www.cyberciti.biz/hardware/cryptsetup-add-enable-luks-disk-encryption-keyfile-linux/][How to enable Lucks disk encryption with Keyfile in Linux]]
+*** Setup Automatic Decryption and mount
+
+First let's create a safe directory to store our key files and upload them:
+
+#+begin_src yaml :tangle playbooks/disks.yml
+---
+- name: Create keys directory
+  file:
+    path: /opt/keys
+    state: directory
+    owner: root
+    group: root
+
+# TODO run me only if the appropriate device is installed. Is it possible to use
+# /dev/disk/by-uuid to compare the list?
+- name: Upload key and secure it [hdd_1]
+  copy:
+    src: ./keys/hdd_1
+    dest: /opt/keys/hdd_1
+    owner: root
+    group: root
+    mode: '0400'
+#+end_src
+
+Then we can use the key, and instruct ~cryptsetup~ to open the device:
+
+#+begin_src yaml :tangle playbooks/disks.yml
+- name: Enable hdd_1 [SEAGATE 1TB]
+  community.crypto.luks_device:
+    uuid: 010d2738-d903-4b46-87be-91f255c7df37
+    keyfile: /opt/keys/hdd_1
+    state: opened
+#+end_src
+
+However so far, the device won't be decrypted or mounted on the boot. Let's take
+care of it:
+
+#+begin_src yaml :tangle playbooks/disks.yml
+- name: Setup crypttab [hdd_1]
+  lineinfile:
+    path: /etc/crypttab
+    regexp: ^hdd_1
+    line: hdd_1 UUID=010d2738-d903-4b46-87be-91f255c7df37 /opt/keys/hdd_1 luks
+#+end_src
+
+**NOTE** the following module currently doesn't support the keyfile flag to
+automatically open the device:
+
+#+begin_src yaml
+# Note this is not tangled due the note above
+ community.general.crypttab:
+   backing_device: UUID=010d2738-d903-4b46-87be-91f255c7df37
+   name: hdd_1
+   keyfile: /opt/keys/hdd_1
+   state: present
+#+end_src
+
+#+begin_src yaml :tangle playbooks/disks.yml
+- name: Mount [hdd_1]
+  mount:
+    path: /mnt/hdd_1
+    src: /dev/mapper/hdd_1
+    fstype: ext4
+    state: present
+#+end_src
+
+** Security
+
+First I tried to implement the security by following [[https://bjpcjp.github.io/pdfs/devops/ansible-server-security.pdf][Ansible Server Security]]
+document. However, then realized there is a project called [[https://github.com/dev-sec/ansible-collection-hardening][Ansible Collection
+Hardening]] which would be more helpful if possible to use. So going to give it a
+try.
+
+#+begin_src sh
+ansible-galaxy collection install devsec.hardening
+#+end_src
+
+#+RESULTS:
+| Starting                | galaxy                                                             | collection | install                                                                                                 | process |
+| Process                 | install                                                            | dependency | map                                                                                                     |         |
+| Starting                | collection                                                         | install    | process                                                                                                 |         |
+| Downloading             | https://galaxy.ansible.com/download/devsec-hardening-7.14.1.tar.gz | to         | /home/shahinazad/.ansible/tmp/ansible-local-214361xxk0k__t/tmpavdbtwlf/devsec-hardening-7.14.1-_43xr5sz |         |
+| Installing              | 'devsec.hardening:7.14.1'                                          | to         | '/home/shahinazad/.ansible/collections/ansible_collections/devsec/hardening'                            |         |
+| devsec.hardening:7.14.1 | was                                                                | installed  | successfully                                                                                            |         |
+| Downloading             | https://galaxy.ansible.com/download/ansible-posix-1.3.0.tar.gz     | to         | /home/shahinazad/.ansible/tmp/ansible-local-214361xxk0k__t/tmpavdbtwlf/ansible-posix-1.3.0-lwhm8lz_     |         |
+| Installing              | 'ansible.posix:1.3.0'                                              | to         | '/home/shahinazad/.ansible/collections/ansible_collections/ansible/posix'                               |         |
+| ansible.posix:1.3.0     | was                                                                | installed  | successfully                                                                                            |         |
+| Downloading             | https://galaxy.ansible.com/download/community-mysql-3.1.1.tar.gz   | to         | /home/shahinazad/.ansible/tmp/ansible-local-214361xxk0k__t/tmpavdbtwlf/community-mysql-3.1.1-30d2s0dp   |         |
+| Installing              | 'community.mysql:3.1.1'                                            | to         | '/home/shahinazad/.ansible/collections/ansible_collections/community/mysql'                             |         |
+| community.mysql:3.1.1   | was                                                                | installed  | successfully                                                                                            |         |
+| Downloading             | https://galaxy.ansible.com/download/community-crypto-2.2.2.tar.gz  | to         | /home/shahinazad/.ansible/tmp/ansible-local-214361xxk0k__t/tmpavdbtwlf/community-crypto-2.2.2-a2nlpq41  |         |
+| Installing              | 'community.crypto:2.2.2'                                           | to         | '/home/shahinazad/.ansible/collections/ansible_collections/community/crypto'                            |         |
+| community.crypto:2.2.2  | was                                                                | installed  | successfully                                                                                            |         |
+| Downloading             | https://galaxy.ansible.com/download/community-general-4.5.0.tar.gz | to         | /home/shahinazad/.ansible/tmp/ansible-local-214361xxk0k__t/tmpavdbtwlf/community-general-4.5.0-l3tnxy7o |         |
+| Installing              | 'community.general:4.5.0'                                          | to         | '/home/shahinazad/.ansible/collections/ansible_collections/community/general'                           |         |
+| community.general:4.5.0 | was                                                                | installed  | successfully                                                                                            |         |
+
+** Main
+
+Let's put all of these together in a single playbook to run:
+
+#+begin_src yaml :tangle playbooks/main.yml
+---
+- name: Install Proper Access
+  hosts: all
+  remote_user: pi
+  become: true
+  gather_facts: true
+  vars:
+    sysctl_overwrite:
+      vm.mmap_rnd_bits: 18
+  collections:
+    - devsec.hardening
+  tasks:
+    - include_tasks: system.yml
+    - include_tasks: applications.yml
+    - include_tasks: disks.yml
+  roles:
+    - os_hardening
+    - ssh_hardening
+#+end_src
+
+*** Nots
+- ~vm.mmap_rnd_bits~ is set to 32 on the hardening collection and [[https://github.com/dev-sec/ansible-collection-hardening/blob/master/roles/os_hardening/README.md#sysctl---vmmmap_rnd_bits][the document]]
+  confirms that there might be some issues with some systems. On Raspberry pi,
+  16 didn't work either and raised "Invalid Argument" error. Instead I just
+  checked ~cat /dev/proc/sys/vm/mmap_rnd_bits~ which showed 18 and set the value
+  to this.

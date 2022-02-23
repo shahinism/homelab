@@ -1,0 +1,36 @@
+---
+- name: Create keys directory
+  file:
+    path: /opt/keys
+    state: directory
+    owner: root
+    group: root
+
+# TODO run me only if the appropriate device is installed. Is it possible to use
+# /dev/disk/by-uuid to compare the list?
+- name: Upload key and secure it [hdd_1]
+  copy:
+    src: ./keys/hdd_1
+    dest: /opt/keys/hdd_1
+    owner: root
+    group: root
+    mode: '0400'
+
+- name: Enable hdd_1 [SEAGATE 1TB]
+  community.crypto.luks_device:
+    uuid: 010d2738-d903-4b46-87be-91f255c7df37
+    keyfile: /opt/keys/hdd_1
+    state: opened
+
+- name: Setup crypttab [hdd_1]
+  lineinfile:
+    path: /etc/crypttab
+    regexp: ^hdd_1
+    line: hdd_1 UUID=010d2738-d903-4b46-87be-91f255c7df37 /opt/keys/hdd_1 luks
+
+- name: Mount [hdd_1]
+  mount:
+    path: /mnt/hdd_1
+    src: /dev/mapper/hdd_1
+    fstype: ext4
+    state: present

@@ -1,0 +1,18 @@
+---
+- name: Install Proper Access
+  hosts: all
+  remote_user: pi
+  become: true
+  gather_facts: true
+  vars:
+    sysctl_overwrite:
+      vm.mmap_rnd_bits: 18
+  collections:
+    - devsec.hardening
+  tasks:
+    - include_tasks: system.yml
+    - include_tasks: applications.yml
+    - include_tasks: disks.yml
+  roles:
+    - os_hardening
+    - ssh_hardening

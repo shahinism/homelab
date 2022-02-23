@@ -1,7 +1,9 @@
+---
 - hosts: all
   remote_user: pi
   tasks:
-    - authorized_keys:
+    - name: Upload SSH Key
+      authorized_key:
         user: pi
         state: present
         manage_dir: yes

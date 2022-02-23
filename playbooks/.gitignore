@@ -1,0 +1,8 @@
+.DS_Store
+.idea
+*.log
+tmp/
+
+# TODO ignore keys/ directory for now until find a better way to securely
+# maintain them.
+keys
